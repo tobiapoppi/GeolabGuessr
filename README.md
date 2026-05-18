@@ -17,8 +17,9 @@ Pagina statica per gestire il campionato GeolabGuessr partendo dal file `GeolabG
 1. Crea o apri il progetto Supabase.
 2. Vai in `SQL Editor` e lancia il file `supabase/schema.sql`.
 3. Verifica che `supabase-config.js` contenga `url` e `anonKey`.
-4. Crea il tuo account dalla pagina `Inserisci`.
-5. Promuovi il tuo account ad admin da SQL:
+4. In `Authentication -> URL Configuration`, imposta il Site URL della GitHub Page e aggiungilo anche tra i Redirect URLs consentiti.
+5. Crea il tuo account dalla pagina `Inserisci`.
+6. Promuovi il tuo account ad admin da SQL:
 
 ```sql
 update public.profiles

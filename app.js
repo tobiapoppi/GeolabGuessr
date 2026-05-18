@@ -3,10 +3,12 @@
 
   var STORAGE_KEY = "geolabguessr-state-v1";
   var SESSION_KEY = "geolabguessr-session-v1";
+  var AUTH_NOTICE_KEY = "geolabguessr-auth-notice-v1";
   var ADMIN_USER = "admin";
   var ADMIN_PASSWORD = "papiropapiro";
   var supabaseClient = null;
   var remoteStatus = {enabled: false, loading: false, error: ""};
+  var authNotice = localStorage.getItem(AUTH_NOTICE_KEY) || "";
   var profileByName = {};
   var dayIdByWeekDay = {};
 
@@ -212,6 +214,7 @@
     remoteStatus.loading = true;
     render();
     try {
+      await handleAuthRedirect();
       var authResult = await supabaseClient.auth.getSession();
       await syncAuthSession(authResult.data.session);
       supabaseClient.auth.onAuthStateChange(function (_event, authSession) {
@@ -229,6 +232,26 @@
     } finally {
       remoteStatus.loading = false;
       render();
+    }
+  }
+
+  async function handleAuthRedirect() {
+    var params = new URLSearchParams(window.location.search);
+    var code = params.get("code");
+    var hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    var type = params.get("type") || hash.get("type");
+
+    if (code) {
+      var result = await supabaseClient.auth.exchangeCodeForSession(code);
+      if (result.error) throw result.error;
+      setAuthNotice("Registrazione confermata. Ora puoi inserire i tuoi score.");
+      history.replaceState(null, "", window.location.pathname + "#inserisci");
+      return;
+    }
+
+    if (type === "signup" || type === "recovery") {
+      setAuthNotice("Registrazione confermata. Ora puoi inserire i tuoi score.");
+      history.replaceState(null, "", window.location.pathname + "#inserisci");
     }
   }
 
@@ -488,7 +511,6 @@
       ),
       "</div>",
       '<aside class="stack">',
-      panel("Stato dati", dataStatus()),
       panel("Accesso rapido", quickLogin()),
       panel("Recap mese chiuso", archiveRecap()),
       panel("Calcolo punti", scoringExplanation()),
@@ -502,6 +524,7 @@
     if (!session.player) {
       app.innerHTML = [
         pageHead("Inserisci", "Login giocatore", remoteStatus.enabled ? "Accedi con email e password per aggiornare i tuoi score condivisi." : "Scegli il tuo nome per aggiornare i tuoi score."),
+        authNoticeBlock(),
         '<section class="panel">',
         playerLoginForm(),
         "</section>"
@@ -514,6 +537,7 @@
     currentWeekId = activeWeek.id;
     app.innerHTML = [
       pageHead("Inserisci", "Ciao, " + escapeHtml(player), "Aggiorna i tuoi score. I punti vengono ricalcolati in automatico."),
+      authNoticeBlock(),
       '<section class="stack">',
       '<div class="panel-head">',
       '<div class="segmented" role="group" aria-label="Settimane disponibili">',
@@ -689,6 +713,21 @@
     return '<p class="muted">Database Supabase attivo. I dati sono condivisi tra tutti i giocatori.</p>';
   }
 
+  function authNoticeBlock() {
+    if (!authNotice) return "";
+    return '<section class="panel notice-panel"><div class="panel-head"><h2>Account</h2><button class="button secondary" type="button" data-action="dismiss-auth-notice">Ok</button></div><p class="toast">' + escapeHtml(authNotice) + "</p></section>";
+  }
+
+  function setAuthNotice(message) {
+    authNotice = message;
+    localStorage.setItem(AUTH_NOTICE_KEY, message);
+  }
+
+  function clearAuthNotice() {
+    authNotice = "";
+    localStorage.removeItem(AUTH_NOTICE_KEY);
+  }
+
   function archiveRecap() {
     if (!state.archives.length) {
       return '<p class="muted">Nessun mese chiuso.</p>';
@@ -765,6 +804,7 @@
       '<div class="field"><label for="register-name">Nome giocatore</label><input id="register-name" name="player" autocomplete="name" required></div>',
       '<div class="field"><label for="register-email">Email</label><input id="register-email" name="email" type="email" autocomplete="email" required></div>',
       '<div class="field"><label for="register-password">Password</label><input id="register-password" name="password" type="password" autocomplete="new-password" minlength="6" required></div>',
+      '<div class="field"><label for="register-password-confirm">Conferma password</label><input id="register-password-confirm" name="passwordConfirm" type="password" autocomplete="new-password" minlength="6" required></div>',
       "</div>",
       '<div class="actions"><button class="button secondary" type="submit">Crea account</button></div>',
       '<p class="toast" id="register-toast" aria-live="polite"></p>',
@@ -815,7 +855,8 @@
       email: email,
       password: password,
       options: {
-        data: {display_name: player}
+        data: {display_name: player},
+        emailRedirectTo: window.location.origin + window.location.pathname + "#inserisci"
       }
     });
     if (result.error) {
@@ -823,9 +864,11 @@
       return;
     }
     if (!result.data.session) {
+      setAuthNotice("Account creato. Controlla l'email e clicca il link di conferma.");
       showToast("register-toast", "Account creato. Controlla l'email per confermare l'accesso.");
       return;
     }
+    setAuthNotice("Registrazione completata. Ora puoi inserire i tuoi score.");
     await syncAuthSession(result.data.session);
     await loadRemoteState();
     window.location.hash = "#inserisci";
@@ -1027,6 +1070,9 @@
     }
 
     if (type === "auth-register") {
+      if (form.elements.password.value !== form.elements.passwordConfirm.value) {
+        return showToast("register-toast", "Le password non coincidono.", true);
+      }
       await registerRemote(
         form.elements.player.value.trim(),
         form.elements.email.value.trim(),
@@ -1105,6 +1151,11 @@
       session.userId = "";
       session.profileId = "";
       saveSession();
+      render();
+    }
+
+    if (target.dataset.action === "dismiss-auth-notice") {
+      clearAuthNotice();
       render();
     }
 
