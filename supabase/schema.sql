@@ -40,6 +40,33 @@ create table if not exists public.scores (
   primary key (day_id, player_id)
 );
 
+create schema if not exists private;
+
+create table if not exists private.admin_credentials (
+  username text primary key,
+  password_hash text not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table private.admin_credentials enable row level security;
+
+create or replace function public.verify_admin_login(input_username text, input_password text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, private
+as $$
+  select exists (
+    select 1
+    from private.admin_credentials
+    where username = input_username
+      and password_hash = crypt(input_password, password_hash)
+  );
+$$;
+
+grant execute on function public.verify_admin_login(text, text) to anon, authenticated;
+
 create or replace function public.is_admin()
 returns boolean
 language sql

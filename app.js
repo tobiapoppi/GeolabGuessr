@@ -476,12 +476,23 @@
       "</div>",
       "</div>",
       playerPicker(player),
+      publicAddPlayerForm(),
       scoreForm(player),
       "</section>"
     ].join("");
   }
 
   function renderAdmin() {
+    if (!session.isAdmin) {
+      app.innerHTML = [
+        pageHead("Admin", "Pannello admin", "Accesso riservato."),
+        '<section class="panel">',
+        adminLoginForm(),
+        "</section>"
+      ].join("");
+      return;
+    }
+
     app.innerHTML = [
       pageHead("Admin", "Pannello admin", "Gestisci il campionato e prepara i dati da pubblicare."),
       '<section class="grid">',
@@ -492,6 +503,7 @@
       "</div>",
       '<aside class="stack">',
       panel("Dati", adminDataTools()),
+      panel("Sessione", '<button class="button secondary" type="button" data-action="logout-admin">Esci admin</button>'),
       "</aside>",
       "</section>"
     ].join("");
@@ -653,11 +665,53 @@
     ].join("");
   }
 
+  function publicAddPlayerForm() {
+    return [
+      '<section class="panel">',
+      '<form data-form="public-add-player" class="form-grid">',
+      '<div class="field"><label for="public-new-player">Nuovo giocatore</label><input id="public-new-player" name="player" autocomplete="name" placeholder="Nome da aggiungere" required></div>',
+      '<div class="field"><label class="sr-only" for="public-add-player-button">Aggiungi</label><button id="public-add-player-button" class="button secondary" type="submit">Aggiungi giocatore</button></div>',
+      "</form>",
+      '<p class="toast" id="public-player-toast" aria-live="polite"></p>',
+      "</section>"
+    ].join("");
+  }
+
   function scoringExplanation() {
     return [
       '<p class="muted">Per ogni giornata si ordinano solo gli score maggiori di zero. Il primo prende 25 punti, poi 20, 16, 13, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2 e 1 punto per le posizioni successive.</p>',
       '<p class="muted">La classifica generale somma i punti di tutte le giornate. A parita\' di punti passa avanti chi ha piu\' score totale.</p>'
     ].join("");
+  }
+
+  function adminLoginForm() {
+    return [
+      '<form data-form="admin-login">',
+      '<div class="form-grid">',
+      '<div class="field"><label for="admin-user">Utente</label><input id="admin-user" name="user" autocomplete="username" required></div>',
+      '<div class="field"><label for="admin-password">Password</label><input id="admin-password" name="password" type="password" autocomplete="current-password" required></div>',
+      "</div>",
+      '<div class="actions"><button class="button" type="submit">Entra admin</button></div>',
+      '<p class="toast" id="admin-toast" aria-live="polite"></p>',
+      "</form>"
+    ].join("");
+  }
+
+  async function verifyAdminLogin(user, password) {
+    if (!user || !password) return false;
+    if (!supabaseClient) {
+      remoteStatus.error = "Supabase deve essere configurato per usare il pannello admin.";
+      return false;
+    }
+    var result = await supabaseClient.rpc("verify_admin_login", {
+      input_username: user,
+      input_password: password
+    });
+    if (result.error) {
+      remoteStatus.error = result.error.message;
+      return false;
+    }
+    return result.data === true;
   }
 
   function scoreForm(player) {
@@ -851,6 +905,26 @@
       render();
     }
 
+    if (type === "public-add-player") {
+      var publicPlayer = form.elements.player.value.trim();
+      if (!publicPlayer) return showToast("public-player-toast", "Inserisci un nome.", true);
+      if (!(await addPlayer(publicPlayer))) return showToast("public-player-toast", "Questo giocatore esiste gia'.", true);
+      session.player = publicPlayer;
+      saveSession();
+      render();
+      showToast("public-player-toast", "Giocatore aggiunto.");
+    }
+
+    if (type === "admin-login") {
+      var user = form.elements.user.value.trim();
+      var password = form.elements.password.value;
+      var ok = await verifyAdminLogin(user, password);
+      if (!ok) return showToast("admin-toast", "Credenziali non valide.", true);
+      session.isAdmin = true;
+      saveSession();
+      render();
+    }
+
     if (type === "scores") {
       var week = getWeek(form.elements.weekId.value);
       var scorePlayer = form.elements.player.value;
@@ -873,20 +947,20 @@
       showToast("score-toast", "Score salvati.");
     }
 
-    if (type === "add-player") {
+    if (type === "add-player" && session.isAdmin) {
       if (await addPlayer(form.elements.player.value.trim())) {
         form.reset();
         render();
       }
     }
 
-    if (type === "add-week") {
+    if (type === "add-week" && session.isAdmin) {
       await addWeek(form.elements.name.value.trim(), form.elements.range.value.trim(), form.elements.days.value);
       form.reset();
       render();
     }
 
-    if (type === "scoring") {
+    if (type === "scoring" && session.isAdmin) {
       var values = parseNumberList(form.elements.scoring.value);
       if (values.length) {
         state.scoring = values;
@@ -905,12 +979,18 @@
       render();
     }
 
-    if (target.dataset.removePlayer) {
+    if (target.dataset.action === "logout-admin") {
+      session.isAdmin = false;
+      saveSession();
+      render();
+    }
+
+    if (target.dataset.removePlayer && session.isAdmin) {
       await removePlayer(target.dataset.removePlayer);
       render();
     }
 
-    if (target.dataset.removeWeek) {
+    if (target.dataset.removeWeek && session.isAdmin) {
       await removeWeek(target.dataset.removeWeek);
       render();
     }
@@ -927,7 +1007,7 @@
       loadJsonFromTextarea();
     }
 
-    if (target.dataset.action === "reset-default") {
+    if (target.dataset.action === "reset-default" && session.isAdmin) {
       state = normalizeState(clone(DEFAULT_STATE));
       saveState();
       render();
@@ -950,7 +1030,7 @@
     }
 
     var fileInput = event.target.closest('input[type="file"]');
-    if (!fileInput || !fileInput.files.length) return;
+    if (!fileInput || !session.isAdmin || !fileInput.files.length) return;
     var reader = new FileReader();
     reader.onload = function () {
       try {
