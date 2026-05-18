@@ -123,54 +123,63 @@ on public.profiles for select
 using (true);
 
 drop policy if exists "profiles can be inserted by admin" on public.profiles;
-create policy "profiles can be inserted by admin"
+drop policy if exists "profiles can be inserted by anyone" on public.profiles;
+create policy "profiles can be inserted by anyone"
 on public.profiles for insert
-with check (public.is_admin());
+with check (true);
 
 drop policy if exists "profiles can be updated by owner or admin" on public.profiles;
-create policy "profiles can be updated by owner or admin"
+drop policy if exists "profiles can be updated by anyone" on public.profiles;
+create policy "profiles can be updated by anyone"
 on public.profiles for update
-using (user_id = auth.uid() or public.is_admin())
-with check (user_id = auth.uid() or public.is_admin());
+using (true)
+with check (true);
 
 drop policy if exists "profiles can be deleted by admin" on public.profiles;
-create policy "profiles can be deleted by admin"
+drop policy if exists "profiles can be deleted by anyone" on public.profiles;
+create policy "profiles can be deleted by anyone"
 on public.profiles for delete
-using (public.is_admin());
+using (true);
 
 drop policy if exists "months are readable" on public.months;
 create policy "months are readable" on public.months for select using (true);
 drop policy if exists "months are writable by admin" on public.months;
-create policy "months are writable by admin" on public.months for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "months are writable by anyone" on public.months;
+create policy "months are writable by anyone" on public.months for all using (true) with check (true);
 
 drop policy if exists "weeks are readable" on public.weeks;
 create policy "weeks are readable" on public.weeks for select using (true);
 drop policy if exists "weeks are writable by admin" on public.weeks;
-create policy "weeks are writable by admin" on public.weeks for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "weeks are writable by anyone" on public.weeks;
+create policy "weeks are writable by anyone" on public.weeks for all using (true) with check (true);
 
 drop policy if exists "days are readable" on public.days;
 create policy "days are readable" on public.days for select using (true);
 drop policy if exists "days are writable by admin" on public.days;
-create policy "days are writable by admin" on public.days for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "days are writable by anyone" on public.days;
+create policy "days are writable by anyone" on public.days for all using (true) with check (true);
 
 drop policy if exists "scores are readable" on public.scores;
 create policy "scores are readable" on public.scores for select using (true);
 
 drop policy if exists "scores can be inserted by owner or admin" on public.scores;
-create policy "scores can be inserted by owner or admin"
+drop policy if exists "scores can be inserted by anyone" on public.scores;
+create policy "scores can be inserted by anyone"
 on public.scores for insert
-with check (player_id = public.my_profile_id() or public.is_admin());
+with check (true);
 
 drop policy if exists "scores can be updated by owner or admin" on public.scores;
-create policy "scores can be updated by owner or admin"
+drop policy if exists "scores can be updated by anyone" on public.scores;
+create policy "scores can be updated by anyone"
 on public.scores for update
-using (player_id = public.my_profile_id() or public.is_admin())
-with check (player_id = public.my_profile_id() or public.is_admin());
+using (true)
+with check (true);
 
 drop policy if exists "scores can be deleted by owner or admin" on public.scores;
-create policy "scores can be deleted by owner or admin"
+drop policy if exists "scores can be deleted by anyone" on public.scores;
+create policy "scores can be deleted by anyone"
 on public.scores for delete
-using (player_id = public.my_profile_id() or public.is_admin());
+using (true);
 
 insert into public.profiles (id, display_name) values
   ('bigaz', 'Bigaz'),
