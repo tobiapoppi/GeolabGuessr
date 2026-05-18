@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Campionato GeolabGuessr</title>
+    <meta name="description" content="Pagina di gestione per il campionato GeolabGuessr.">
+    <link rel="stylesheet" href="styles.css?v=6">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#classifica" aria-label="Vai alla classifica">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>
+            <strong>GeolabGuessr</strong>
+            <small>Campionato</small>
+          </span>
+        </a>
+
+        <nav class="nav-tabs" aria-label="Sezioni">
+          <a href="#classifica" data-route="classifica">Classifica</a>
+          <a href="#inserisci" data-route="inserisci">Inserisci</a>
+          <a href="#archivio" data-route="archivio">Archivio</a>
+          <a href="#admin" data-route="admin">Admin</a>
+          <a href="#dati" data-route="dati">Dati</a>
+        </nav>
+      </header>
+
+      <main id="app" tabindex="-1"></main>
+    </div>
+
+    <template id="empty-state-template">
+      <section class="empty-state">
+        <div class="empty-map" aria-hidden="true"></div>
+        <h1>Campionato GeolabGuessr</h1>
+        <p>Nessun dato disponibile.</p>
+      </section>
+    </template>
+
+    <script src="app.js?v=6"></script>
+  </body>
+</html>
