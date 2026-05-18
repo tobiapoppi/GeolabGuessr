@@ -5,6 +5,10 @@
   var SESSION_KEY = "geolabguessr-session-v1";
   var ADMIN_USER = "admin";
   var ADMIN_PASSWORD = "papiropapiro";
+  var supabaseClient = null;
+  var remoteStatus = {enabled: false, loading: false, error: ""};
+  var profileByName = {};
+  var dayIdByWeekDay = {};
 
   var DEFAULT_STATE = {
     seasonName: "Campionato GeolabGuessr",
@@ -140,7 +144,9 @@
   document.addEventListener("input", handleInput);
   document.addEventListener("change", handleChange);
 
+  setupSupabase();
   render();
+  initRemote();
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -192,6 +198,171 @@
 
   function saveSession() {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  }
+
+  function setupSupabase() {
+    var config = window.GEOLAB_SUPABASE || {};
+    if (!config.url || !config.anonKey || !window.supabase) return;
+    supabaseClient = window.supabase.createClient(config.url, config.anonKey);
+    remoteStatus.enabled = true;
+  }
+
+  async function initRemote() {
+    if (!supabaseClient) return;
+    remoteStatus.loading = true;
+    render();
+    try {
+      var authResult = await supabaseClient.auth.getSession();
+      await syncAuthSession(authResult.data.session);
+      supabaseClient.auth.onAuthStateChange(function (_event, authSession) {
+        syncAuthSession(authSession).then(function () {
+          return loadRemoteState();
+        }).then(render).catch(function (error) {
+          remoteStatus.error = error.message;
+          render();
+        });
+      });
+      await loadRemoteState();
+      remoteStatus.error = "";
+    } catch (error) {
+      remoteStatus.error = error.message;
+    } finally {
+      remoteStatus.loading = false;
+      render();
+    }
+  }
+
+  async function syncAuthSession(authSession) {
+    if (!supabaseClient || !authSession || !authSession.user) {
+      session.userId = "";
+      session.email = "";
+      session.player = "";
+      session.isAdmin = false;
+      saveSession();
+      return;
+    }
+
+    var user = authSession.user;
+    var profileResult = await supabaseClient
+      .from("profiles")
+      .select("id, display_name, is_admin")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (profileResult.error) throw profileResult.error;
+
+    session.userId = user.id;
+    session.email = user.email || "";
+    session.profileId = profileResult.data ? profileResult.data.id : "";
+    session.player = profileResult.data ? profileResult.data.display_name : "";
+    session.isAdmin = Boolean(profileResult.data && profileResult.data.is_admin);
+    saveSession();
+  }
+
+  async function loadRemoteState() {
+    if (!supabaseClient) return;
+    remoteStatus.loading = true;
+
+    var results = await Promise.all([
+      supabaseClient.from("profiles").select("id, display_name, is_admin").order("display_name"),
+      supabaseClient.from("months").select("id, name, range_text, is_active, sort_order").order("sort_order"),
+      supabaseClient.from("weeks").select("id, month_id, name, range_text, sort_order").order("sort_order"),
+      supabaseClient.from("days").select("id, week_id, label, sort_order").order("sort_order"),
+      supabaseClient.from("scores").select("day_id, player_id, score")
+    ]);
+
+    results.forEach(function (result) {
+      if (result.error) throw result.error;
+    });
+
+    var profiles = results[0].data || [];
+    var months = results[1].data || [];
+    var weeks = results[2].data || [];
+    var days = results[3].data || [];
+    var scores = results[4].data || [];
+
+    if (!months.length || !weeks.length || !days.length) {
+      remoteStatus.error = "Database Supabase vuoto: esegui supabase/schema.sql.";
+      return;
+    }
+
+    profileByName = {};
+    profiles.forEach(function (profile) {
+      profileByName[profile.display_name] = profile.id;
+    });
+
+    var playerById = {};
+    profiles.forEach(function (profile) {
+      playerById[profile.id] = profile.display_name;
+    });
+
+    var scoreByDayPlayer = {};
+    scores.forEach(function (score) {
+      scoreByDayPlayer[score.day_id + "::" + score.player_id] = score.score;
+    });
+
+    dayIdByWeekDay = {};
+    var daysByWeek = groupBy(days, "week_id");
+    var weeksByMonth = groupBy(weeks, "month_id");
+
+    function buildWeeks(monthId) {
+      return (weeksByMonth[monthId] || []).map(function (week) {
+        var sortedDays = (daysByWeek[week.id] || []).slice().sort(sortByOrder);
+        var weekScores = {};
+        profiles.forEach(function (profile) {
+          weekScores[profile.display_name] = {};
+          sortedDays.forEach(function (day) {
+            dayIdByWeekDay[week.id + "::" + day.label] = day.id;
+            weekScores[profile.display_name][day.label] = scoreValue(scoreByDayPlayer[day.id + "::" + profile.id]);
+          });
+        });
+        return {
+          id: week.id,
+          name: week.name,
+          range: week.range_text || "",
+          days: sortedDays.map(function (day) { return day.label; }),
+          scores: weekScores
+        };
+      }).sort(sortByOrder);
+    }
+
+    var activeMonth = months.find(function (month) { return month.is_active; }) || months[months.length - 1];
+    state = normalizeState({
+      seasonName: DEFAULT_STATE.seasonName,
+      rules: DEFAULT_STATE.rules,
+      scoring: DEFAULT_STATE.scoring,
+      players: profiles.map(function (profile) { return profile.display_name; }),
+      currentMonth: {
+        id: activeMonth.id,
+        name: activeMonth.name,
+        range: activeMonth.range_text || ""
+      },
+      weeks: buildWeeks(activeMonth.id),
+      archives: months.filter(function (month) {
+        return month.id !== activeMonth.id;
+      }).map(function (month) {
+        return {
+          id: month.id,
+          name: month.name,
+          range: month.range_text || "",
+          weeks: buildWeeks(month.id)
+        };
+      }).reverse()
+    });
+    saveState();
+    remoteStatus.error = "";
+  }
+
+  function groupBy(rows, key) {
+    return rows.reduce(function (groups, row) {
+      groups[row[key]] = groups[row[key]] || [];
+      groups[row[key]].push(row);
+      return groups;
+    }, {});
+  }
+
+  function sortByOrder(a, b) {
+    return (a.sort_order || 0) - (b.sort_order || 0);
   }
 
   function normalizeState(next) {
@@ -303,6 +474,7 @@
       "</section>",
       '<section class="grid">',
       '<div class="stack">',
+      remoteStatus.error ? panel("Database", '<p class="toast error">' + escapeHtml(remoteStatus.error) + "</p>") : "",
       panel("Classifica generale", leaderboardTable(rows, true), "tight"),
       panel(
         "Classifica settimanale",
@@ -316,6 +488,7 @@
       ),
       "</div>",
       '<aside class="stack">',
+      panel("Stato dati", dataStatus()),
       panel("Accesso rapido", quickLogin()),
       panel("Recap mese chiuso", archiveRecap()),
       panel("Calcolo punti", scoringExplanation()),
@@ -328,7 +501,7 @@
   function renderInsert() {
     if (!session.player) {
       app.innerHTML = [
-        pageHead("Inserisci", "Login giocatore", "Scegli il tuo nome per aggiornare i tuoi score."),
+        pageHead("Inserisci", "Login giocatore", remoteStatus.enabled ? "Accedi con email e password per aggiornare i tuoi score condivisi." : "Scegli il tuo nome per aggiornare i tuoi score."),
         '<section class="panel">',
         playerLoginForm(),
         "</section>"
@@ -357,6 +530,27 @@
   }
 
   function renderAdmin() {
+    if (remoteStatus.enabled && !session.userId) {
+      app.innerHTML = [
+        pageHead("Admin", "Login admin", "Accedi con l'account Supabase marcato come admin."),
+        '<section class="panel">',
+        authForms(),
+        "</section>"
+      ].join("");
+      return;
+    }
+
+    if (remoteStatus.enabled && !session.isAdmin) {
+      app.innerHTML = [
+        pageHead("Admin", "Accesso non autorizzato", "Il tuo account non ha permessi admin."),
+        '<section class="panel">',
+        '<p class="muted">Chiedi a un admin di impostare <code>is_admin = true</code> sul tuo profilo Supabase.</p>',
+        '<div class="actions"><button class="button secondary" type="button" data-action="logout-player">Esci</button></div>',
+        "</section>"
+      ].join("");
+      return;
+    }
+
     if (!session.isAdmin) {
       app.innerHTML = [
         pageHead("Admin", "Pannello admin", "Accesso riservato alla gestione di giocatori, settimane e dati."),
@@ -399,7 +593,7 @@
       "</div>",
       '<aside class="panel">',
       '<h2>Pubblicazione</h2>',
-      '<p class="muted">Su GitHub Pages questa pagina non ha un server: i salvataggi sono locali al browser. Usa export/import JSON per allineare i dati pubblicati.</p>',
+      '<p class="muted">' + (remoteStatus.enabled ? "Supabase e' configurato: i salvataggi sono condivisi nel database." : "Supabase non e' configurato: i salvataggi restano locali al browser.") + "</p>",
       "</aside>",
       "</section>"
     ].join("");
@@ -482,6 +676,19 @@
     return playerLoginForm();
   }
 
+  function dataStatus() {
+    if (!remoteStatus.enabled) {
+      return '<p class="muted">Modalita locale: configura Supabase in <code>supabase-config.js</code> per condividere i dati tra tutti.</p>';
+    }
+    if (remoteStatus.loading) {
+      return '<p class="muted">Sincronizzazione Supabase in corso...</p>';
+    }
+    if (remoteStatus.error) {
+      return '<p class="toast error">' + escapeHtml(remoteStatus.error) + "</p>";
+    }
+    return '<p class="muted">Database Supabase attivo. I dati sono condivisi tra tutti i giocatori.</p>';
+  }
+
   function archiveRecap() {
     if (!state.archives.length) {
       return '<p class="muted">Nessun mese chiuso.</p>';
@@ -512,6 +719,10 @@
   }
 
   function playerLoginForm() {
+    if (remoteStatus.enabled) {
+      return authForms();
+    }
+
     return [
       '<form data-form="player-login">',
       '<div class="field">',
@@ -538,6 +749,29 @@
     ].join("");
   }
 
+  function authForms() {
+    return [
+      '<form data-form="auth-login">',
+      '<div class="form-grid">',
+      '<div class="field"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="email" required></div>',
+      '<div class="field"><label for="auth-password">Password</label><input id="auth-password" name="password" type="password" autocomplete="current-password" required></div>',
+      "</div>",
+      '<div class="actions"><button class="button" type="submit">Entra</button></div>',
+      '<p class="toast" id="auth-toast" aria-live="polite"></p>',
+      "</form>",
+      '<hr class="soft-divider">',
+      '<form data-form="auth-register">',
+      '<div class="form-grid">',
+      '<div class="field"><label for="register-name">Nome giocatore</label><input id="register-name" name="player" autocomplete="name" required></div>',
+      '<div class="field"><label for="register-email">Email</label><input id="register-email" name="email" type="email" autocomplete="email" required></div>',
+      '<div class="field"><label for="register-password">Password</label><input id="register-password" name="password" type="password" autocomplete="new-password" minlength="6" required></div>',
+      "</div>",
+      '<div class="actions"><button class="button secondary" type="submit">Crea account</button></div>',
+      '<p class="toast" id="register-toast" aria-live="polite"></p>',
+      "</form>"
+    ].join("");
+  }
+
   function scoringExplanation() {
     return [
       '<p class="muted">Per ogni giornata si ordinano solo gli score maggiori di zero. Il primo prende 25 punti, poi 20, 16, 13, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2 e 1 punto per le posizioni successive.</p>',
@@ -556,6 +790,46 @@
       '<p class="toast" id="admin-toast" aria-live="polite"></p>',
       "</form>"
     ].join("");
+  }
+
+  async function loginRemote(email, password) {
+    if (!supabaseClient) return;
+    var result = await supabaseClient.auth.signInWithPassword({
+      email: email,
+      password: password
+    });
+    if (result.error) {
+      showToast("auth-toast", result.error.message, true);
+      return;
+    }
+    await syncAuthSession(result.data.session);
+    await loadRemoteState();
+    window.location.hash = "#inserisci";
+    render();
+  }
+
+  async function registerRemote(player, email, password) {
+    if (!supabaseClient) return;
+    if (!player) return showToast("register-toast", "Inserisci un nome giocatore.", true);
+    var result = await supabaseClient.auth.signUp({
+      email: email,
+      password: password,
+      options: {
+        data: {display_name: player}
+      }
+    });
+    if (result.error) {
+      showToast("register-toast", result.error.message, true);
+      return;
+    }
+    if (!result.data.session) {
+      showToast("register-toast", "Account creato. Controlla l'email per confermare l'accesso.");
+      return;
+    }
+    await syncAuthSession(result.data.session);
+    await loadRemoteState();
+    window.location.hash = "#inserisci";
+    render();
   }
 
   function scoreForm(player) {
@@ -722,7 +996,7 @@
     ].join("");
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     var form = event.target.closest("form");
     if (!form) return;
     var type = form.dataset.form;
@@ -741,11 +1015,23 @@
     if (type === "register-player") {
       var newPlayer = form.elements.player.value.trim();
       if (!newPlayer) return showToast("register-toast", "Inserisci un nome.", true);
-      if (!addPlayer(newPlayer)) return showToast("register-toast", "Questo giocatore esiste gia'.", true);
+      if (!(await addPlayer(newPlayer))) return showToast("register-toast", "Questo giocatore esiste gia'.", true);
       session.player = newPlayer;
       saveSession();
       window.location.hash = "#inserisci";
       render();
+    }
+
+    if (type === "auth-login") {
+      await loginRemote(form.elements.email.value.trim(), form.elements.password.value);
+    }
+
+    if (type === "auth-register") {
+      await registerRemote(
+        form.elements.player.value.trim(),
+        form.elements.email.value.trim(),
+        form.elements.password.value
+      );
     }
 
     if (type === "admin-login") {
@@ -768,19 +1054,26 @@
         week.scores[session.player][day] = scoreValue(form.elements[day].value);
       });
       saveState();
+      if (remoteStatus.enabled) {
+        for (var i = 0; i < week.days.length; i += 1) {
+          var day = week.days[i];
+          await saveScoreRemote(week, session.player, day, scoreValue(form.elements[day].value));
+        }
+        await loadRemoteState();
+      }
       render();
       showToast("score-toast", "Score salvati.");
     }
 
     if (type === "add-player" && session.isAdmin) {
-      if (addPlayer(form.elements.player.value.trim())) {
+      if (await addPlayer(form.elements.player.value.trim())) {
         form.reset();
         render();
       }
     }
 
     if (type === "add-week" && session.isAdmin) {
-      addWeek(form.elements.name.value.trim(), form.elements.range.value.trim(), form.elements.days.value);
+      await addWeek(form.elements.name.value.trim(), form.elements.range.value.trim(), form.elements.days.value);
       form.reset();
       render();
     }
@@ -795,7 +1088,7 @@
     }
   }
 
-  function handleClick(event) {
+  async function handleClick(event) {
     var target = event.target.closest("button, a");
     if (!target) return;
 
@@ -805,7 +1098,12 @@
     }
 
     if (target.dataset.action === "logout-player") {
+      if (supabaseClient) {
+        await supabaseClient.auth.signOut();
+      }
       session.player = "";
+      session.userId = "";
+      session.profileId = "";
       saveSession();
       render();
     }
@@ -817,14 +1115,12 @@
     }
 
     if (target.dataset.removePlayer && session.isAdmin) {
-      removePlayer(target.dataset.removePlayer);
+      await removePlayer(target.dataset.removePlayer);
       render();
     }
 
     if (target.dataset.removeWeek && session.isAdmin) {
-      state.weeks = state.weeks.filter(function (week) { return week.id !== target.dataset.removeWeek; });
-      if (!getWeek(currentWeekId) && state.weeks[0]) currentWeekId = state.weeks[0].id;
-      saveState();
+      await removeWeek(target.dataset.removeWeek);
       render();
     }
 
@@ -869,8 +1165,17 @@
     reader.readAsText(fileInput.files[0]);
   }
 
-  function addPlayer(player) {
+  async function addPlayer(player) {
     if (!player || state.players.includes(player)) return false;
+    if (supabaseClient) {
+      var result = await supabaseClient.from("profiles").insert({display_name: player});
+      if (result.error) {
+        remoteStatus.error = result.error.message;
+        return false;
+      }
+      await loadRemoteState();
+      return true;
+    }
     state.players.push(player);
     state.weeks.forEach(function (week) {
       week.scores[player] = {};
@@ -882,7 +1187,18 @@
     return true;
   }
 
-  function removePlayer(player) {
+  async function removePlayer(player) {
+    if (supabaseClient) {
+      var profileId = profileByName[player];
+      if (!profileId) return;
+      var result = await supabaseClient.from("profiles").delete().eq("id", profileId);
+      if (result.error) {
+        remoteStatus.error = result.error.message;
+        return;
+      }
+      await loadRemoteState();
+      return;
+    }
     state.players = state.players.filter(function (name) { return name !== player; });
     state.weeks.forEach(function (week) {
       delete week.scores[player];
@@ -892,9 +1208,76 @@
     saveState();
   }
 
-  function addWeek(name, range, daysText) {
+  async function removeWeek(weekId) {
+    if (supabaseClient) {
+      var result = await supabaseClient.from("weeks").delete().eq("id", weekId);
+      if (result.error) {
+        remoteStatus.error = result.error.message;
+        return;
+      }
+      await loadRemoteState();
+      if (!getWeek(currentWeekId) && state.weeks[0]) currentWeekId = state.weeks[0].id;
+      return;
+    }
+    state.weeks = state.weeks.filter(function (week) { return week.id !== weekId; });
+    if (!getWeek(currentWeekId) && state.weeks[0]) currentWeekId = state.weeks[0].id;
+    saveState();
+  }
+
+  async function saveScoreRemote(week, player, day, score) {
+    if (!supabaseClient) return;
+    if (!session.profileId) {
+      remoteStatus.error = "Devi accedere con Supabase prima di salvare.";
+      return;
+    }
+    var dayId = dayIdByWeekDay[week.id + "::" + day];
+    if (!dayId) {
+      remoteStatus.error = "Giornata non trovata nel database.";
+      return;
+    }
+    var result = await supabaseClient
+      .from("scores")
+      .upsert({
+        day_id: dayId,
+        player_id: session.profileId,
+        score: score
+      }, {onConflict: "day_id,player_id"});
+    if (result.error) {
+      remoteStatus.error = result.error.message;
+    }
+  }
+
+  async function addWeek(name, range, daysText) {
     var days = daysText.split(",").map(function (day) { return day.trim(); }).filter(Boolean);
     if (!name || !days.length) return;
+    if (supabaseClient) {
+      var activeMonthId = state.currentMonth.id;
+      var weekResult = await supabaseClient
+        .from("weeks")
+        .insert({
+          month_id: activeMonthId,
+          name: name,
+          range_text: range,
+          sort_order: state.weeks.length + 1
+        })
+        .select("id")
+        .single();
+      if (weekResult.error) {
+        remoteStatus.error = weekResult.error.message;
+        return;
+      }
+      var dayRows = days.map(function (day, index) {
+        return {week_id: weekResult.data.id, label: day, sort_order: index + 1};
+      });
+      var dayResult = await supabaseClient.from("days").insert(dayRows);
+      if (dayResult.error) {
+        remoteStatus.error = dayResult.error.message;
+        return;
+      }
+      await loadRemoteState();
+      currentWeekId = weekResult.data.id;
+      return;
+    }
     var id = slug(name) + "-" + Date.now().toString(36);
     var scores = {};
     state.players.forEach(function (player) {
