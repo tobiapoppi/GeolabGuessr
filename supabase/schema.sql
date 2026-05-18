@@ -1,4 +1,4 @@
-create extension if not exists pgcrypto;
+create extension if not exists pgcrypto with schema extensions;
 
 create table if not exists public.profiles (
   id text primary key default gen_random_uuid()::text,
@@ -61,7 +61,7 @@ as $$
     select 1
     from private.admin_credentials
     where username = input_username
-      and password_hash = crypt(input_password, password_hash)
+      and password_hash = extensions.crypt(input_password, password_hash)
   );
 $$;
 

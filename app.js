@@ -7,6 +7,7 @@
   var remoteStatus = {enabled: false, loading: false, error: ""};
   var profileByName = {};
   var dayIdByWeekDay = {};
+  var lastRoute = "";
 
   var DEFAULT_STATE = {
     seasonName: "Campionato GeolabGuessr",
@@ -394,6 +395,11 @@
 
   function render() {
     var activeRoute = route().split("/")[0];
+    if (activeRoute === "inserisci" && lastRoute !== "inserisci" && session.player) {
+      session.player = "";
+      saveSession();
+    }
+    lastRoute = activeRoute;
     document.querySelectorAll("[data-route]").forEach(function (link) {
       link.setAttribute("aria-current", link.dataset.route === activeRoute ? "page" : "false");
     });
@@ -459,9 +465,7 @@
   }
 
   function renderInsert() {
-    var player = session.player && state.players.includes(session.player) ? session.player : state.players[0];
-    session.player = player;
-    saveSession();
+    var player = session.player && state.players.includes(session.player) ? session.player : "";
     var activeWeek = getWeek(currentWeekId) || state.weeks[0];
     currentWeekId = activeWeek.id;
     app.innerHTML = [
@@ -477,7 +481,7 @@
       "</div>",
       playerPicker(player),
       publicAddPlayerForm(),
-      scoreForm(player),
+      player ? scoreForm(player) : choosePlayerPrompt(),
       "</section>"
     ].join("");
   }
@@ -654,6 +658,7 @@
       '<div class="field">',
       '<label for="player-name">Giocatore da modificare</label>',
       '<select id="player-name" name="player" required>',
+      '<option value="">Seleziona giocatore</option>',
       state.players.map(function (player) {
         var selected = player === selectedPlayer ? " selected" : "";
         return '<option value="' + escapeAttr(player) + '"' + selected + ">" + escapeHtml(player) + "</option>";
@@ -661,6 +666,15 @@
       "</select>",
       "</div>",
       "</form>",
+      "</section>"
+    ].join("");
+  }
+
+  function choosePlayerPrompt() {
+    return [
+      '<section class="panel">',
+      '<h2>Seleziona un giocatore</h2>',
+      '<p class="muted">Prima scegli a chi vuoi segnare i punteggi, poi compaiono le giornate da compilare.</p>',
       "</section>"
     ].join("");
   }
