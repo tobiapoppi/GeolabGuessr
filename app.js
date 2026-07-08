@@ -210,9 +210,16 @@
     if (!supabaseClient) return;
     remoteStatus.loading = true;
     render();
+    var rolloverError = "";
+    try {
+      await ensureRemoteCurrentMonth();
+    } catch (error) {
+      rolloverError = "Rollover mese non completato: " + error.message;
+    }
+
     try {
       await loadRemoteState();
-      remoteStatus.error = "";
+      remoteStatus.error = rolloverError;
     } catch (error) {
       remoteStatus.error = error.message;
     } finally {
@@ -313,6 +320,180 @@
     });
     saveState();
     remoteStatus.error = "";
+  }
+
+  async function ensureRemoteCurrentMonth() {
+    if (!supabaseClient) return;
+    var today = startOfDay(new Date());
+    var results = await Promise.all([
+      supabaseClient.from("months").select("id, name, range_text, is_active, sort_order").order("sort_order"),
+      supabaseClient.from("weeks").select("id, month_id, name, range_text, sort_order").order("sort_order"),
+      supabaseClient.from("days").select("id, week_id, label, sort_order").order("sort_order")
+    ]);
+
+    results.forEach(function (result) {
+      if (result.error) throw result.error;
+    });
+
+    var months = results[0].data || [];
+    var weeks = results[1].data || [];
+    var days = results[2].data || [];
+    if (!months.length || !weeks.length || !days.length) return;
+
+    months = months.slice().sort(sortByOrder);
+    for (var i = 0; i < 12; i += 1) {
+      var activeMonth = months.find(function (month) { return month.is_active; }) || months[months.length - 1];
+      var activeEnd = monthEndDate(activeMonth, weeks, days, today);
+      if (!activeEnd || today <= activeEnd) return;
+
+      var nextMonth = buildNextRemoteMonth(activeMonth, months, activeEnd);
+      await insertRemoteMonth(nextMonth);
+      months.forEach(function (month) { month.is_active = false; });
+      months.push(nextMonth.month);
+      weeks = weeks.concat(nextMonth.weeks);
+      days = days.concat(nextMonth.days);
+    }
+
+    throw new Error("Rollover mesi interrotto: controlla i range in Supabase.");
+  }
+
+  function monthEndDate(month, weeks, days, today) {
+    var rangeEnd = parseRangeEndDate(month.range_text, today);
+    if (rangeEnd) return rangeEnd;
+
+    var monthWeeks = weeks.filter(function (week) { return week.month_id === month.id; });
+    var daysByWeek = groupBy(days, "week_id");
+    var labels = [];
+    monthWeeks.forEach(function (week) {
+      (daysByWeek[week.id] || []).forEach(function (day) {
+        labels.push(day.label);
+      });
+    });
+    return labels.map(function (label) {
+      return parseDayMonth(label, today);
+    }).filter(Boolean).sort(function (a, b) {
+      return a - b;
+    }).pop() || null;
+  }
+
+  function parseRangeEndDate(rangeText, today) {
+    var parts = String(rangeText || "").split("-");
+    return parts.length > 1 ? parseDayMonth(parts[1], today) : null;
+  }
+
+  function parseDayMonth(value, today) {
+    var match = String(value || "").trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+    if (!match) return null;
+    var day = parseInt(match[1], 10);
+    var month = parseInt(match[2], 10);
+    var parsed = new Date(today.getFullYear(), month - 1, day, 12, 0, 0, 0);
+    if (!Number.isFinite(parsed.getTime())) return null;
+    if (parsed.getMonth() !== month - 1 || parsed.getDate() !== day) return null;
+    if (parsed - today > 1000 * 60 * 60 * 24 * 180) {
+      parsed.setFullYear(parsed.getFullYear() - 1);
+    }
+    return startOfDay(parsed);
+  }
+
+  function buildNextRemoteMonth(activeMonth, months, activeEnd) {
+    var nextOrder = Math.max.apply(null, months.map(function (month) {
+      return parseInt(month.sort_order, 10) || 0;
+    })) + 1;
+    var nextNumber = Math.max(nextOrder, nextMonthNumber(months));
+    var start = nextMondayAfter(activeEnd);
+    var weeks = [];
+    var days = [];
+
+    for (var weekIndex = 0; weekIndex < 4; weekIndex += 1) {
+      var weekStart = addDays(start, weekIndex * 7);
+      var weekEnd = addDays(weekStart, 4);
+      var weekId = "m" + nextNumber + "w" + (weekIndex + 1);
+      weeks.push({
+        id: weekId,
+        month_id: "mese-" + nextNumber,
+        name: "Settimana " + (weekIndex + 1),
+        range_text: formatDayMonth(weekStart) + "-" + formatDayMonth(weekEnd),
+        sort_order: weekIndex + 1
+      });
+      for (var dayIndex = 0; dayIndex < 5; dayIndex += 1) {
+        days.push({
+          id: weekId + "d" + (dayIndex + 1),
+          week_id: weekId,
+          label: formatDayMonth(addDays(weekStart, dayIndex)),
+          sort_order: dayIndex + 1
+        });
+      }
+    }
+
+    return {
+      month: {
+        id: "mese-" + nextNumber,
+        name: "Mese " + nextNumber,
+        range_text: weeks[0].range_text.split("-")[0] + "-" + weeks[3].range_text.split("-")[1],
+        is_active: true,
+        sort_order: nextOrder
+      },
+      weeks: weeks,
+      days: days
+    };
+  }
+
+  function nextMonthNumber(months) {
+    return months.reduce(function (next, month) {
+      var match = String(month.id || "").match(/^mese-(\d+)$/);
+      return match ? Math.max(next, parseInt(match[1], 10) + 1) : next;
+    }, 1);
+  }
+
+  async function insertRemoteMonth(nextMonth) {
+    var pendingMonth = Object.assign({}, nextMonth.month, {is_active: false});
+
+    var monthResult = await supabaseClient
+      .from("months")
+      .upsert(pendingMonth, {onConflict: "id"});
+    if (monthResult.error) throw monthResult.error;
+
+    var weekResult = await supabaseClient
+      .from("weeks")
+      .upsert(nextMonth.weeks, {onConflict: "id"});
+    if (weekResult.error) throw weekResult.error;
+
+    var dayResult = await supabaseClient
+      .from("days")
+      .upsert(nextMonth.days, {onConflict: "id"});
+    if (dayResult.error) throw dayResult.error;
+
+    var deactivateResult = await supabaseClient
+      .from("months")
+      .update({is_active: false})
+      .neq("id", nextMonth.month.id);
+    if (deactivateResult.error) throw deactivateResult.error;
+
+    var activateResult = await supabaseClient
+      .from("months")
+      .update({is_active: true})
+      .eq("id", nextMonth.month.id);
+    if (activateResult.error) throw activateResult.error;
+  }
+
+  function startOfDay(date) {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0, 0);
+  }
+
+  function addDays(date, amount) {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate() + amount, 12, 0, 0, 0);
+  }
+
+  function nextMondayAfter(date) {
+    var next = addDays(date, 1);
+    while (next.getDay() !== 1) {
+      next = addDays(next, 1);
+    }
+    return next;
+  }
+
+  function formatDayMonth(date) {
+    return String(date.getDate()).padStart(2, "0") + "/" + String(date.getMonth() + 1).padStart(2, "0");
   }
 
   function groupBy(rows, key) {
