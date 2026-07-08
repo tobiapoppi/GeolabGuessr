@@ -346,7 +346,7 @@
       var activeEnd = monthEndDate(activeMonth, weeks, days, today);
       if (!activeEnd || today <= activeEnd) return;
 
-      var nextMonth = buildNextRemoteMonth(activeMonth, months, activeEnd);
+      var nextMonth = buildNextRemoteMonth(months, activeEnd);
       await insertRemoteMonth(nextMonth);
       months.forEach(function (month) { month.is_active = false; });
       months.push(nextMonth.month);
@@ -358,6 +358,9 @@
   }
 
   function monthEndDate(month, weeks, days, today) {
+    var rangeStart = parseRangeStartDate(month.range_text, today);
+    if (rangeStart) return lastDayOfMonth(rangeStart);
+
     var rangeEnd = parseRangeEndDate(month.range_text, today);
     if (rangeEnd) return rangeEnd;
 
@@ -381,6 +384,11 @@
     return parts.length > 1 ? parseDayMonth(parts[1], today) : null;
   }
 
+  function parseRangeStartDate(rangeText, today) {
+    var parts = String(rangeText || "").split("-");
+    return parts.length ? parseDayMonth(parts[0], today) : null;
+  }
+
   function parseDayMonth(value, today) {
     var match = String(value || "").trim().match(/^(\d{1,2})\/(\d{1,2})$/);
     if (!match) return null;
@@ -395,47 +403,92 @@
     return startOfDay(parsed);
   }
 
-  function buildNextRemoteMonth(activeMonth, months, activeEnd) {
+  function buildNextRemoteMonth(months, activeEnd) {
     var nextOrder = Math.max.apply(null, months.map(function (month) {
       return parseInt(month.sort_order, 10) || 0;
     })) + 1;
     var nextNumber = Math.max(nextOrder, nextMonthNumber(months));
-    var start = nextMondayAfter(activeEnd);
+    var start = firstDayOfNextMonth(activeEnd);
+    var end = lastDayOfMonth(start);
     var weeks = [];
     var days = [];
+    var cursor = startOfDay(start);
 
-    for (var weekIndex = 0; weekIndex < 4; weekIndex += 1) {
-      var weekStart = addDays(start, weekIndex * 7);
-      var weekEnd = addDays(weekStart, 4);
-      var weekId = "m" + nextNumber + "w" + (weekIndex + 1);
-      weeks.push({
-        id: weekId,
-        month_id: "mese-" + nextNumber,
-        name: "Settimana " + (weekIndex + 1),
-        range_text: formatDayMonth(weekStart) + "-" + formatDayMonth(weekEnd),
-        sort_order: weekIndex + 1
-      });
-      for (var dayIndex = 0; dayIndex < 5; dayIndex += 1) {
-        days.push({
-          id: weekId + "d" + (dayIndex + 1),
-          week_id: weekId,
-          label: formatDayMonth(addDays(weekStart, dayIndex)),
-          sort_order: dayIndex + 1
+    while (cursor <= end) {
+      var weekDays = [];
+      var weekCursor = startOfDay(cursor);
+      while (weekCursor <= end && weekCursor.getDay() !== 0) {
+        if (weekCursor.getDay() >= 1 && weekCursor.getDay() <= 5) {
+          weekDays.push(startOfDay(weekCursor));
+        }
+        weekCursor = addDays(weekCursor, 1);
+      }
+
+      if (weekDays.length) {
+        var weekId = "m" + nextNumber + "w" + (weeks.length + 1);
+        var firstDay = weekDays[0];
+        var lastDay = weekDays[weekDays.length - 1];
+        weeks.push({
+          id: weekId,
+          month_id: "mese-" + nextNumber,
+          name: "Settimana " + (weeks.length + 1),
+          range_text: formatDayMonth(firstDay) + "-" + formatDayMonth(lastDay),
+          sort_order: weeks.length + 1
+        });
+        weekDays.forEach(function (day, dayIndex) {
+          days.push({
+            id: weekId + "d" + (dayIndex + 1),
+            week_id: weekId,
+            label: formatDayMonth(day),
+            sort_order: dayIndex + 1
+          });
         });
       }
+
+      cursor = weekCursor.getDay() === 0 ? addDays(weekCursor, 1) : weekCursor;
+    }
+
+    if (!weeks.length) {
+      throw new Error("Nessuna giornata feriale trovata per il nuovo mese.");
     }
 
     return {
       month: {
         id: "mese-" + nextNumber,
-        name: "Mese " + nextNumber,
-        range_text: weeks[0].range_text.split("-")[0] + "-" + weeks[3].range_text.split("-")[1],
+        name: formatMonthName(start),
+        range_text: formatDayMonth(start) + "-" + formatDayMonth(end),
         is_active: true,
         sort_order: nextOrder
       },
       weeks: weeks,
       days: days
     };
+  }
+
+  function formatMonthName(date) {
+    var months = [
+      "Gennaio",
+      "Febbraio",
+      "Marzo",
+      "Aprile",
+      "Maggio",
+      "Giugno",
+      "Luglio",
+      "Agosto",
+      "Settembre",
+      "Ottobre",
+      "Novembre",
+      "Dicembre"
+    ];
+    return months[date.getMonth()] + " " + date.getFullYear();
+  }
+
+  function firstDayOfNextMonth(date) {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 1, 12, 0, 0, 0);
+  }
+
+  function lastDayOfMonth(date) {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0, 12, 0, 0, 0);
   }
 
   function nextMonthNumber(months) {
@@ -482,14 +535,6 @@
 
   function addDays(date, amount) {
     return new Date(date.getFullYear(), date.getMonth(), date.getDate() + amount, 12, 0, 0, 0);
-  }
-
-  function nextMondayAfter(date) {
-    var next = addDays(date, 1);
-    while (next.getDay() !== 1) {
-      next = addDays(next, 1);
-    }
-    return next;
   }
 
   function formatDayMonth(date) {
